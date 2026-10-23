@@ -101,6 +101,8 @@ class EstimationState(TypedDict, total=False):
     # Keyed reducer: idempotent across a resume that re-enters the fan-out.
     task_hours: Annotated[list[dict], merge_task_hours]
     estimate: Optional[dict]
+    # Jev triage verdicts from the recovery join (audit; written once, last-write-wins).
+    jev_decisions: Optional[list[dict]]
 
     # --- analysis_agent + human gate 2 ------------------------------------- #
     analysis_report: Optional[dict]  # ReliabilityReport.model_dump()

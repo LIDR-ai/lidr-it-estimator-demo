@@ -182,3 +182,6 @@ class AgentTaskHoursRun(BaseModel):
     trace: AgentTrace
     iterations: int = Field(ge=0, description="Number of Responses API round-trips.")
     stopped_reason: Literal["completed", "max_iterations"] = "completed"
+    # Summed Responses API token usage of the loop (input/output/reasoning/cached);
+    # ``None`` when the client reported none (e.g. the test fakes).
+    usage: dict[str, int] | None = None

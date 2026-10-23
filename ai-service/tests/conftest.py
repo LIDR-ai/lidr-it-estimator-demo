@@ -34,6 +34,21 @@ def _disable_service_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "AI_SERVICE_TOKEN", None)
 
 
+@pytest.fixture(autouse=True)
+def _disable_jev(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the real Jev client out of the suite.
+
+    Jev is ON by default (``GRAPH_JEV_ENABLED=True``) and only needs a key to start
+    making HTTPS calls, so a local ``.env`` with ``JEV_API_KEY`` would send every graph
+    test to jevai.org. Pinning the key to ``None`` makes ``get_jev_classifier()``
+    return ``None``; the triage tests inject their own fake classifier on purpose.
+    """
+    from app.dependencies import get_jev_classifier
+
+    monkeypatch.setattr(get_settings(), "JEV_API_KEY", None)
+    get_jev_classifier.cache_clear()
+
+
 @pytest.fixture
 def client() -> TestClient:
     """Provide a FastAPI test client configured with the application."""

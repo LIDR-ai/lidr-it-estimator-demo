@@ -29,6 +29,9 @@ Run variants::
     # for the classifier / structure / analysis / proposal agents)
     uv run python scripts/run_graph_s13.py --memory --stub
 
+    # Same, but with a mix of reliabilities so the Jev triage + Trinity both run
+    uv run python scripts/run_graph_s13.py --memory --stub-mixed
+
 ``--stub`` swaps the real S9/S10 per-task retrieval (``estimate_one``) for a canned
 offline estimate so the fan-out needs no database. The real path needs the
 historical-task corpus ingested (``scripts/build_task_corpus.py --ingest``).
@@ -49,6 +52,7 @@ from langgraph.types import Command  # noqa: E402
 
 from app.domain.graph.build import build_graph  # noqa: E402
 from app.domain.graph.observability import configure_logfire  # noqa: E402
+from app.foundation.llm.usage_meter import metered  # noqa: E402
 
 DEFAULT_TRANSCRIPT = REPO_ROOT / "exercises" / "session-12" / "sample_transcript_complex.txt"
 
@@ -84,6 +88,52 @@ def _install_stub_hours() -> None:
     hours_mod.estimate_one = _stub_estimate_one  # type: ignore[assignment]
 
 
+def _install_stub_mixed_hours() -> None:
+    """Like ``_install_stub_hours`` but with a deterministic MIX of reliabilities.
+
+    Cycles every task through four buckets so a demo always exercises both deciders
+    of the recovery join: solid (accepted, no one asked), the Jev band (0.15–0.35 →
+    Jev decides), very weak (straight to Trinity) and no match (straight to Trinity).
+    """
+    from app.domain.graph.agents import hours as hours_mod
+    from app.generation.rag.schemas import TaskHoursEstimate
+
+    async def _stub_estimate_one(module, name, description, *, top_k, distance_threshold, **kwargs):
+        seed = sum(ord(c) for c in f"{module}/{name}")
+        hours = 8 + (seed % 10) * 8  # 8..80h
+        bucket = seed % 4
+        if bucket == 3:
+            return TaskHoursEstimate(module=module, task=name, has_match=False)
+        reliability = {0: 0.82, 1: 0.28, 2: 0.08}[bucket]
+        return TaskHoursEstimate(
+            module=module,
+            task=name,
+            estimated_hours=hours,
+            reliability=reliability,
+            has_match=True,
+            dispersion=0.1,
+            neighbors=[],
+        )
+
+    hours_mod.estimate_one = _stub_estimate_one  # type: ignore[assignment]
+
+
+def _render_usage(ledger) -> str:
+    """Per-agent token usage of the whole run (list prices from MODEL_COSTS)."""
+    lines = ["TOKEN USAGE (whole run · list prices)"]
+    for source, rec in sorted(ledger.by_source().items(), key=lambda kv: -kv[1].cost_usd):
+        lines.append(
+            f"  {source:<26} {rec.calls:>3} calls  {rec.input_tokens:>9,} in  "
+            f"{rec.output_tokens:>8,} out ({rec.reasoning_tokens:,} reasoning)  ${rec.cost_usd:.4f}"
+        )
+    total = ledger.totals()
+    lines.append(
+        f"  {'TOTAL':<26} {total.calls:>3} calls  {total.input_tokens:>9,} in  "
+        f"{total.output_tokens:>8,} out  ${total.cost_usd:.4f}"
+    )
+    return "\n".join(lines)
+
+
 def _render(state: dict) -> str:
     lines = [
         "=" * 78,
@@ -108,11 +158,25 @@ def _render(state: dict) -> str:
             hours = task.get("estimated_hours")
             hours_text = f"{hours}h" if hours is not None else "NO MATCH"
             flag = "" if task.get("has_match") else "  ⚠ flagged"
+            if task.get("accepted_by") == "jev":
+                flag += "  ✓ Jev"
             lines.append(f"      - {task.get('name')}: {hours_text}{flag}")
     lines.append(
         f"  TOTAL: {estimate.get('total_engineer_days')}d "
         f"({estimate.get('total_engineer_hours')}h, confidence {estimate.get('confidence')})"
     )
+
+    decisions = state.get("jev_decisions") or []
+    lines += ["", "JEV TRIAGE (recover_and_handover — before Trinity)"]
+    if not decisions:
+        lines.append("  (no task in the Jev band, or Jev disabled / no JEV_API_KEY)")
+    for d in decisions:
+        p_accept = (d.get("probabilities") or {}).get("accept")
+        p_text = f"p(accept)={p_accept:.2f}" if p_accept is not None else "p(accept)=?"
+        err = f"  ERROR: {d['error']}" if d.get("error") else ""
+        lines.append(f"  - {d.get('task')}: {d.get('decision')} ({p_text}){err}")
+    accepted = sum(1 for t in (state.get("task_hours") or []) if t.get("accepted_by") == "jev")
+    lines.append(f"  Jev accepted {accepted}/{len(decisions)}; the rest went to Trinity")
 
     report = state.get("analysis_report") or {}
     lines += ["", "RELIABILITY REPORT (analysis_agent)"]
@@ -163,19 +227,33 @@ async def _main_async(args: argparse.Namespace) -> int:
     estimation_id = args.estimation_id or f"s13-{transcript_path.stem}"
 
     configure_logfire()  # no FastAPI app in the CLI; spans + httpx only
-    if args.stub:
+    if args.stub_mixed:
+        _install_stub_mixed_hours()
+    elif args.stub:
         _install_stub_hours()
 
+    from app.dependencies import get_jev_classifier
+
+    hours_mode = (
+        "stub mixed (offline, exercises Jev + Trinity)"
+        if args.stub_mixed
+        else "stub (offline)"
+        if args.stub
+        else "real estimate_one()"
+    )
     print(f"transcript    : {transcript_path}")
     print(f"checkpointer  : {'MemorySaver' if args.memory else 'AsyncPostgresSaver (pool)'}")
-    print(f"per-task hours: {'stub (offline)' if args.stub else 'real estimate_one()'}")
+    print(f"per-task hours: {hours_mode}")
+    print(f"jev triage    : {'ON' if get_jev_classifier() else 'off (disabled or no JEV_API_KEY)'}")
     print(f"estimation_id : {estimation_id}\n")
 
     if args.memory:
         from langgraph.checkpoint.memory import MemorySaver
 
         graph = build_graph(MemorySaver())
-        state = await _run_to_completion(graph, transcript, estimation_id)
+        with metered() as ledger:
+            with metered() as ledger:
+                state = await _run_to_completion(graph, transcript, estimation_id)
     else:
         from app.domain.graph.checkpointer import open_checkpointer
 
@@ -183,7 +261,7 @@ async def _main_async(args: argparse.Namespace) -> int:
             graph = build_graph(checkpointer)
             state = await _run_to_completion(graph, transcript, estimation_id)
 
-    rendered = _render(state)
+    rendered = _render(state) + "\n\n" + _render_usage(ledger)
     print("\n" + rendered)
     if args.out:
         Path(args.out).write_text(rendered + "\n", encoding="utf-8")
@@ -208,6 +286,11 @@ def main() -> int:
         "--stub",
         action="store_true",
         help="Use canned offline per-task hours (no database for the fan-out).",
+    )
+    parser.add_argument(
+        "--stub-mixed",
+        action="store_true",
+        help="Like --stub but with a mix of reliabilities, so Jev and Trinity both run.",
     )
     parser.add_argument("--out", help="Write the rendered run to this file.")
     args = parser.parse_args()

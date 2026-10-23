@@ -21,6 +21,9 @@ module Rag
     attribute :hours_reliability, :float
     attribute :rate_eur_per_hour, :integer
     attribute :has_match, :boolean, default: true
+    # Graph flow: "jev" when Jev's triage accepted the retrieved hours as is (they never
+    # went to the recovery agent). Nil everywhere else.
+    attribute :accepted_by, :string
 
     attr_reader :hours_range
 
@@ -34,7 +37,8 @@ module Rag
       @hours_range = Rag::HourRangeView.from_hash(stringified.delete("hours_range"))
       super(stringified.slice(
         "name", "description", "engineer_days",
-        "estimated_hours", "rate_eur_per_hour", "hours_reliability", "has_match"
+        "estimated_hours", "rate_eur_per_hour", "hours_reliability", "has_match",
+        "accepted_by"
       ))
     end
 
@@ -43,6 +47,8 @@ module Rag
 
     # Red flag: no historical analog was found, so no hours were derived.
     def flagged? = has_match == false
+
+    def jev_accepted? = accepted_by == "jev"
 
     def reliability_pct = hours_reliability ? (hours_reliability * 100).round : nil
 

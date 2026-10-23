@@ -260,6 +260,24 @@ class Settings(BaseSettings):
     # whose short persona is prepended to its system prompt. Flip to false to run the
     # agents plain (personas never change the required output shape; see graph/personas.py).
     GRAPH_PERSONAS_ENABLED: bool = True
+    # Jev (TypeSafe AI) triage in the recovery join: before Trinity's gpt-5 loop, each
+    # doubtful task that HAS hours and reliability >= GRAPH_JEV_MIN_RELIABILITY is sent
+    # to Jev, which accepts it as is or escalates it. ON by default, but inert while
+    # JEV_API_KEY is blank (no key → no client → the pre-Jev behaviour), so local runs
+    # and CI never need Jev. Any Jev failure escalates (the pre-Jev behaviour).
+    GRAPH_JEV_ENABLED: bool = True
+    JEV_API_BASE_URL: str = "https://www.jevai.org"
+    JEV_API_KEY: str | None = None  # personal key from https://www.jevai.org/agent/keys
+    JEV_MODEL: str = "typesafe-ai/jev"
+    JEV_TIMEOUT: float = 10.0
+    JEV_MAX_CONCURRENCY: int = 8
+    # Below this the analog is too weak to be worth asking: straight to Trinity.
+    GRAPH_JEV_MIN_RELIABILITY: float = 0.15
+    # Jev's probabilities are signals, not authorization — WE set the accept bar.
+    GRAPH_JEV_ACCEPT_CONFIDENCE: float = 0.7
+    # Jev reports no token usage and publishes no price; the token comparison
+    # (scripts/compare_jev_tokens.py) prices each Jev call at this flat fee (USD).
+    JEV_COST_PER_CALL_USD: float = 0.0
     # classifier's complexity → structure_agent reasoning effort. A richer transcript
     # gets more thinking budget; a simple one stays cheap. Kept as a plain dict so the
     # mapping is data, not a code branch.

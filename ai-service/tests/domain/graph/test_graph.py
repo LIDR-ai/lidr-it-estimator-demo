@@ -215,6 +215,96 @@ async def test_full_flow_pauses_at_both_gates_and_completes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_full_flow_with_jev_triage_end_to_end(monkeypatch):
+    """START → gate 1 → fan-out → Jev → Trinity → analysis → gate 2 → proposal → END.
+
+    Four tasks hit the three bands: "API" is solid (nobody asked), "Auth" and "Cache"
+    sit in the Jev band (Jev accepts "Auth", escalates "Cache"), "Legacy" has no match.
+    Only "Cache" + "Legacy" may reach Trinity, and the Jev acceptance must survive the
+    gate-2 resume all the way to the final estimate.
+    """
+    from app.foundation.llm.jev import JevVerdict
+
+    reliability = {"API": 0.9, "Auth": 0.3, "Cache": 0.25}
+
+    async def _one(module, name, description, *, top_k, distance_threshold, **kwargs):
+        if name == "Legacy":
+            return TaskHoursEstimate(module=module, task=name, has_match=False)
+        return TaskHoursEstimate(
+            module=module,
+            task=name,
+            estimated_hours=24,
+            reliability=reliability[name],
+            has_match=True,
+            dispersion=0.1,
+            neighbors=[],
+        )
+
+    class _Jev:
+        seen: list[str] = []
+
+        async def classify(self, tasks):
+            self.seen.extend(t.task for t in tasks)
+            return [
+                JevVerdict(
+                    module=t.module,
+                    task=t.task,
+                    decision="accept" if t.task == "Auth" else "escalate",
+                    probabilities={"accept": 0.95 if t.task == "Auth" else 0.1},
+                )
+                for t in tasks
+            ]
+
+    trinity_calls: list[list[str]] = []
+
+    async def _recovery(flagged, **kwargs):
+        trinity_calls.append(sorted(f.task for f in flagged))
+        return AgentTaskHoursRun(
+            derivations=[
+                AgentTaskDerivation(
+                    module=f.module, task=f.task, estimated_hours=64, reliability=0.7, has_match=True
+                )
+                for f in flagged
+            ],
+            trace=AgentTrace(),
+            iterations=1,
+            stopped_reason="completed",
+        )
+
+    jev = _Jev()
+    monkeypatch.setattr("app.dependencies.get_jev_classifier", lambda: jev)
+    _wire(
+        monkeypatch,
+        wrapper=_FakeWrapper(),
+        structure_fn=_structure({"Backend": ["API", "Auth", "Cache", "Legacy"]}),
+        estimate_one_fn=_one,
+        recovery_fn=_recovery,
+    )
+    graph = build_graph(MemorySaver())
+
+    await _start(graph)
+    await graph.ainvoke(Command(resume={"approved": True}), CONFIG)
+    snap = await graph.aget_state(CONFIG)
+    assert snap.next == ("human_gate_analysis",)
+    assert sorted(jev.seen) == ["Auth", "Cache"]  # only the Jev band was asked
+    assert trinity_calls == [["Cache", "Legacy"]]  # Jev's accept never reached Trinity
+
+    result = await graph.ainvoke(
+        Command(resume={"validated": True, "want_proposal": True}), CONFIG
+    )
+    assert result["status"] == "validated"
+    assert result["proposal"]
+    tasks = {t["name"]: t for t in result["estimate"]["modules"][0]["tasks"]}
+    assert tasks["Auth"]["accepted_by"] == "jev"
+    assert tasks["Auth"]["estimated_hours"] == 24  # retrieved hours, untouched
+    assert tasks["Cache"]["estimated_hours"] == 64  # recovered by Trinity
+    assert tasks["Legacy"]["estimated_hours"] == 64
+    assert tasks["API"]["accepted_by"] is None
+    assert len(result["jev_decisions"]) == 2
+    assert len(result["task_hours"]) == 4  # keyed reducer: no duplicates across resumes
+
+
+@pytest.mark.asyncio
 async def test_gate2_without_proposal_ends_without_proposal(monkeypatch):
     wrapper = _FakeWrapper()
     _wire(

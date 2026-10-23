@@ -43,6 +43,7 @@ from typing import Any
 import structlog
 
 from app.domain.schemas.agent_trace import AgentStep, AgentTrace
+from app.foundation.llm.usage_meter import record, usage_from_responses_api
 from app.generation.agentic.agent_schemas import (
     AgentStructure,
     AgentTaskDerivation,
@@ -122,6 +123,17 @@ def _extract_reasoning_summary(output: list[Any]) -> str | None:
     return " ".join(parts) if parts else None
 
 
+def _meter(source: str, model: str, response: Any, acc: dict[str, int] | None = None) -> None:
+    """Record one Responses API round-trip in the active usage ledger (+ a local sum)."""
+    usage = usage_from_responses_api(response)
+    if not usage:
+        return
+    record(source, model, **usage)
+    if acc is not None:
+        for key, value in usage.items():
+            acc[key] = acc.get(key, 0) + value
+
+
 def _function_calls(output: list[Any]) -> list[Any]:
     return [item for item in output if getattr(item, "type", None) == "function_call"]
 
@@ -153,6 +165,7 @@ async def run_structure_agent(
         text_format=AgentStructure,
         store=True,
     )
+    _meter("structure_agent", model, response)
     structure: AgentStructure = response.output_parsed
     reasoning_summary = _extract_reasoning_summary(getattr(response, "output", []) or [])
 
@@ -239,6 +252,8 @@ async def run_task_hours_recovery_agent(
         reasoning={"effort": reasoning_effort, "summary": "auto"},
         store=True,
     )
+    usage: dict[str, int] = {}
+    _meter("trinity_recovery", model, response, usage)
     iterations = 1
 
     while True:
@@ -315,6 +330,7 @@ async def run_task_hours_recovery_agent(
             reasoning={"effort": reasoning_effort, "summary": "auto"},
             store=True,
         )
+        _meter("trinity_recovery", model, response, usage)
         iterations += 1
 
     log.info(
@@ -329,4 +345,5 @@ async def run_task_hours_recovery_agent(
         trace=trace,
         iterations=iterations,
         stopped_reason=stopped_reason,  # type: ignore[arg-type]
+        usage=usage or None,
     )

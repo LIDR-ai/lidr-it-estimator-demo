@@ -37,7 +37,13 @@
             <% mod.tasks.each_with_index do |task, t| %>
               <li data-task-row class="flex items-center justify-between gap-3 text-xs">
                 <div class="min-w-0">
-                  <div class="text-white/80 truncate"><%= task.name %></div>
+                  <div class="text-white/80 truncate">
+                    <%= task.name %>
+                    <% if task.jev_accepted? %>
+                      <span class="ml-1 inline-flex items-center rounded border border-brand/40 bg-brand/10 px-1.5 py-0.5 text-[10px] font-bold text-brand-soft"
+                            title="Jev (TypeSafe AI) aceptó las horas del histórico sin pasar por el agente de recuperación">✓ Jev</span>
+                    <% end %>
+                  </div>
                   <span data-missing-hint class="text-danger text-xs <%= "hidden" if task.estimated_hours.present? %>">sin horas — complétalas</span>
                 </div>
                 <div class="flex items-center gap-1 shrink-0">

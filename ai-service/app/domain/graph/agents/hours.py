@@ -9,8 +9,9 @@ Two nodes cooperate:
   ``merge_task_hours`` reducer accumulates them idempotently.
 
 * ``recover_and_handover`` is the JOIN, run once after every branch settles. It flags
-  the doubtful tasks (no match / contradictory / low reliability) and, only if any,
-  runs the Session 12 agentic recovery loop ONCE over the batch (reason→act→observe:
+  the doubtful tasks (no match / contradictory / low reliability), lets Jev (TypeSafe
+  AI's classifier, when enabled) accept outright the ones whose retrieved hours are
+  good enough, and, only if any remain, runs the Session 12 agentic recovery loop ONCE over the batch (reason→act→observe:
   reformulate the query, review analogs, decide) — this is where the agent REASONS
   instead of doing a single lookup. It merges the recovered hours, builds the
   structured estimate and performs the explicit HANDOVER to ``analysis_agent`` via
@@ -34,8 +35,15 @@ from app.generation.rag.agent_retrieval import make_retrieval_backend
 from app.generation.rag.task_hours import distance_weighted_consensus, estimate_one
 
 from app.config import get_settings
-from app.domain.graph.agents._common import build_estimate, flag_reason
+from app.domain.graph.agents._common import (
+    build_estimate,
+    flag_reason,
+    jev_accepts,
+    jev_candidate,
+)
 from app.domain.graph.personas import persona_for
+from app.foundation.llm.jev import JevTaskInput
+from app.foundation.llm.usage_meter import record
 from app.generation.agentic.agent_schemas import AgentTaskRef
 
 log = structlog.get_logger()
@@ -112,7 +120,67 @@ async def recover_and_handover(state: dict) -> Command:
                 )
             )
 
-        from app.dependencies import get_async_openai_client, get_runtime_retrieval_config
+        from app.dependencies import (
+            get_async_openai_client,
+            get_jev_classifier,
+            get_runtime_retrieval_config,
+        )
+
+        # JEV TRIAGE: before the (expensive) gpt-5 loop, Jev decides for each doubtful
+        # task that already HAS hours whether to accept them as is. Only what it does
+        # not accept — plus the rows it cannot judge (no match / too weak) — reaches
+        # Trinity. Any Jev failure is a verdict of "escalate", so this never loses a task.
+        jev_decisions: list[dict] = []
+        errors: list[str] = []
+        classifier = get_jev_classifier()
+        candidate_keys = {
+            (row.get("module"), row.get("task"))
+            for row in task_hours
+            if jev_candidate(row, settings.GRAPH_JEV_MIN_RELIABILITY)
+        }
+        if classifier is not None and candidate_keys:
+            with logfire.span("jev: triage", candidates=len(candidate_keys)):
+                verdicts = await classifier.classify(
+                    [
+                        JevTaskInput(
+                            module=f.module,
+                            task=f.task,
+                            description=f.description,
+                            estimated_hours=by_key[(f.module, f.task)].get("estimated_hours"),
+                            reliability=by_key[(f.module, f.task)].get("reliability"),
+                            hours_range=by_key[(f.module, f.task)].get("hours_range"),
+                            flag_reason=f.reason,
+                        )
+                        for f in flagged
+                        if (f.module, f.task) in candidate_keys
+                    ]
+                )
+            jev_decisions = [v.model_dump() for v in verdicts]
+            # Jev reports no tokens: meter it per CALL, priced by the configured flat fee.
+            for _ in verdicts:
+                record("jev", settings.JEV_MODEL, cost_usd=settings.JEV_COST_PER_CALL_USD)
+            accepted_keys = {
+                (v["module"], v["task"])
+                for v in jev_decisions
+                if (v["module"], v["task"]) in candidate_keys
+                and jev_accepts(v, settings.GRAPH_JEV_ACCEPT_CONFIDENCE)
+            }
+            jev_errors = sum(1 for v in jev_decisions if v.get("error"))
+            if jev_errors:
+                errors.append(f"jev: {jev_errors} task(s) escalated after a Jev error")
+            for key in accepted_keys:
+                verdict = next(v for v in jev_decisions if (v["module"], v["task"]) == key)
+                by_key[key] = {
+                    **by_key[key],
+                    "accepted_by": "jev",
+                    "jev_confidence": (verdict.get("probabilities") or {}).get(
+                        "accept", verdict.get("confidence")
+                    ),
+                    # The point consensus is kept; an accepted range is resolved to it.
+                    "hours_range": None,
+                }
+            task_hours = list(by_key.values())
+            flagged = [f for f in flagged if (f.module, f.task) not in accepted_keys]
 
         client = get_async_openai_client()
         merged = task_hours
@@ -129,6 +197,7 @@ async def recover_and_handover(state: dict) -> Command:
         )
         stopped_reason = None
         iterations = 0
+        trinity_usage: dict[str, int] = {}
         if flagged and client is not None:
             log.info(
                 "agentic_recovery_start",
@@ -168,12 +237,20 @@ async def recover_and_handover(state: dict) -> Command:
             merged = list(merged_map.values())
             stopped_reason = run.stopped_reason
             iterations = run.iterations
+            trinity_usage = run.usage or {}
 
         estimate = build_estimate(approved, merged)
         log.info(
             "recover_and_handover_done",
             flagged=len(flagged),
             recovered=recovered_count,
+            jev_candidates=len(jev_decisions),
+            jev_accepted=sum(1 for t in merged if t.get("accepted_by") == "jev"),
+            jev_errors=sum(1 for v in jev_decisions if v.get("error")),
+            trinity_tasks=len(flagged),
+            trinity_input_tokens=trinity_usage.get("input_tokens", 0),
+            trinity_output_tokens=trinity_usage.get("output_tokens", 0),
+            trinity_reasoning_tokens=trinity_usage.get("reasoning_tokens", 0),
             # Without these three, a recovery truncated by the iteration budget is
             # indistinguishable from one that genuinely found no analog — and the whole
             # point of the unmatched rows is that they mean "no precedent", not "ran out
@@ -184,7 +261,7 @@ async def recover_and_handover(state: dict) -> Command:
             total_engineer_days=estimate.get("total_engineer_days"),
         )
         # Explicit handover: pass the estimate + merged hours to analysis_agent.
-        return Command(
-            goto="analysis_agent",
-            update={"estimate": estimate, "task_hours": merged},
-        )
+        update = {"estimate": estimate, "task_hours": merged, "jev_decisions": jev_decisions}
+        if errors:
+            update["errors"] = errors
+        return Command(goto="analysis_agent", update=update)

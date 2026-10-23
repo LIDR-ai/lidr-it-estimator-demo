@@ -108,6 +108,14 @@ def describe_node(node_name: str, update) -> list[dict]:
             estimate = _first(updates, "estimate") or {}
             days = estimate.get("total_engineer_days")
             tail = f" · {days} jornadas" if days is not None else ""
+            jev = _first(updates, "jev_decisions") or []
+            if jev:
+                accepted = sum(
+                    1
+                    for t in (_first(updates, "task_hours") or [])
+                    if t.get("accepted_by") == "jev"
+                )
+                tail += f" · Jev aceptó {accepted}/{len(jev)}"
             return [{"node": key, "label": label, "message": f"Estimación construida{tail}"}]
 
         if node_name == "analysis_agent":

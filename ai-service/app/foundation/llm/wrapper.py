@@ -31,36 +31,21 @@ from litellm import Router
 from pydantic import BaseModel
 
 from app.foundation.llm.runtime_config import RuntimeModelConfig
+from app.foundation.llm.usage_meter import (  # noqa: F401 - re-exported
+    MODEL_COSTS,
+    _estimate_cost,
+    _normalise_model_name,
+    record,
+    usage_from_chat_completion,
+)
 from app.generation.cag.exact import EstimationCache
 
 log = structlog.get_logger()
 
 
-# Cost per 1M tokens (USD). Update as pricing changes.
-MODEL_COSTS: dict[str, dict[str, float]] = {
-    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-    "gpt-4o": {"input": 2.50, "output": 10.00},
-    # Session 9 — reasoning models used by the RAG estimation pipeline.
-    "gpt-5": {"input": 1.25, "output": 10.00},
-    "gpt-5-mini": {"input": 0.25, "output": 2.00},
-    "claude-haiku-4-5": {"input": 1.00, "output": 5.00},
-    "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
-    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
-}
-
-
+# Pricing (USD per 1M tokens) lives in usage_meter so the hand-written Responses API
+# agents price their calls with the same table; re-exported here for existing imports.
 T = TypeVar("T", bound=BaseModel)
-
-
-def _estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
-    base = _normalise_model_name(model)
-    costs = MODEL_COSTS.get(base) or MODEL_COSTS.get(model) or {"input": 0.0, "output": 0.0}
-    return round((tokens_in * costs["input"] + tokens_out * costs["output"]) / 1_000_000, 6)
-
-
-def _normalise_model_name(model: str) -> str:
-    """Strip provider prefixes like ``anthropic/`` that LiteLLM may emit."""
-    return model.split("/", 1)[1] if "/" in model else model
 
 
 def _provider_from_model(model: str) -> str:
@@ -274,11 +259,20 @@ class LLMWrapper:
             raise
 
         latency_ms = int((time.perf_counter() - t0) * 1000)
+        # Instructor attaches the raw completion (usage summed across its re-prompts).
+        usage = usage_from_chat_completion(getattr(result, "_raw_response", None))
         meta = {
             "model": _normalise_model_name(target_model),
             "provider": _provider_from_model(target_model),
             "latency_ms": latency_ms,
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+            "cost_usd": _estimate_cost(
+                target_model, usage.get("input_tokens", 0), usage.get("output_tokens", 0)
+            ),
         }
+        if usage:
+            record(response_model.__name__, target_model, **usage)
         log.info(
             "llm_structured_chat_completed",
             model=meta["model"],
@@ -351,16 +345,27 @@ class LLMWrapper:
             raise
 
         latency_ms = int((time.perf_counter() - t0) * 1000)
+        # Instructor attaches the raw completion (usage summed across its re-prompts).
+        usage = usage_from_chat_completion(getattr(result, "_raw_response", None))
         meta = {
             "model": _normalise_model_name(target_model),
             "provider": _provider_from_model(target_model),
             "latency_ms": latency_ms,
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+            "cost_usd": _estimate_cost(
+                target_model, usage.get("input_tokens", 0), usage.get("output_tokens", 0)
+            ),
         }
+        if usage:
+            record(response_model.__name__, target_model, **usage)
         log.info(
             "llm_structured_call_completed",
             model=meta["model"],
             provider=meta["provider"],
             latency_ms=latency_ms,
+            input_tokens=meta["input_tokens"],
+            output_tokens=meta["output_tokens"],
         )
         return result, meta
 

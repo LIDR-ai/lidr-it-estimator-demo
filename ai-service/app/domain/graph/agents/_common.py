@@ -53,6 +53,36 @@ def flag_reason(task_hours: dict) -> str | None:
     return None
 
 
+def jev_candidate(task_hours: dict, min_reliability: float) -> bool:
+    """Is a doubtful row eligible for Jev triage (accept as is vs. escalate)?
+
+    Jev can only *accept* hours that exist, so a row needs a match and a point
+    estimate. A contradictory range qualifies (its point consensus is still usable);
+    a low-reliability row only above ``min_reliability`` — below it the analog is too
+    weak to be worth asking and goes straight to the recovery agent.
+    """
+    if flag_reason(task_hours) is None:
+        return False
+    if not task_hours.get("has_match") or task_hours.get("estimated_hours") is None:
+        return False
+    if task_hours.get("hours_range") is not None:
+        return True
+    reliability = task_hours.get("reliability")
+    return reliability is not None and reliability >= min_reliability
+
+
+def jev_accepts(verdict: dict, accept_confidence: float) -> bool:
+    """Our acceptance rule over a Jev verdict dump (its probabilities are signals).
+
+    ``choice == "accept"`` is not enough: the accept probability (or, failing that,
+    the overall confidence) must clear OUR threshold. An errored verdict never accepts.
+    """
+    if verdict.get("error") or verdict.get("decision") != "accept":
+        return False
+    score = (verdict.get("probabilities") or {}).get("accept", verdict.get("confidence"))
+    return score is not None and score >= accept_confidence
+
+
 def recompute_estimate_totals(modules: list[dict]) -> dict:
     """The four headline totals derived from a module→task tree's ``estimated_hours``.
 
@@ -106,6 +136,8 @@ def build_estimate(approved_modules: list[dict], task_hours: list[dict]) -> dict
                     "estimated_hours": est.get("estimated_hours") if est else None,
                     "reliability": est.get("reliability") if est else None,
                     "has_match": bool(est and est.get("has_match")),
+                    # "jev" when the triage accepted the retrieved hours as is.
+                    "accepted_by": est.get("accepted_by") if est else None,
                 }
             )
         out_modules.append({"name": module.get("name"), "tasks": tasks_out})

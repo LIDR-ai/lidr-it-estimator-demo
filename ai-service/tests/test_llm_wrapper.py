@@ -242,3 +242,31 @@ def test_complete_takes_direct_path_when_runtime_override_active() -> None:
     assert router_call.call_count == 0
     assert direct.call_args.kwargs["model"] == "gpt-4o"
     assert result["model"] == "gpt-4o"
+
+
+def test_complete_structured_meters_instructor_raw_usage(wrapper: LLMWrapper) -> None:
+    """Instructor's ``_raw_response`` usage lands in ``meta`` and in the active ledger."""
+    from types import SimpleNamespace
+
+    from pydantic import BaseModel
+
+    from app.foundation.llm.usage_meter import metered
+
+    class _Answer(BaseModel):
+        text: str
+
+    answer = _Answer(text="ok")
+    answer._raw_response = SimpleNamespace(  # what Instructor attaches
+        usage=SimpleNamespace(prompt_tokens=1_000, completion_tokens=200)
+    )
+    with metered() as ledger, patch.object(
+        wrapper._instructor.chat.completions, "create", return_value=answer
+    ):
+        _, meta = wrapper.complete_structured(
+            system_prompt="s", user_message="u", response_model=_Answer
+        )
+
+    assert (meta["input_tokens"], meta["output_tokens"]) == (1_000, 200)
+    assert meta["cost_usd"] == _estimate_cost("gpt-4o-mini", 1_000, 200)
+    [rec] = ledger.records
+    assert (rec.source, rec.model, rec.input_tokens) == ("_Answer", "gpt-4o-mini", 1_000)

@@ -224,3 +224,46 @@ async def test_recovery_bad_tool_args_do_not_crash_the_loop():
     assert run.trace.steps[0].tool == "derive_task_hours"
     assert "error" in run.trace.steps[0].observation.lower()
     assert run.derivations == []  # a failed derive is not captured
+
+
+async def test_recovery_sums_responses_api_usage_into_run_and_ledger():
+    from app.foundation.llm.usage_meter import metered
+
+    class _UsageResponses(_FakeResponses):
+        async def create(self, **kwargs):
+            resp = await super().create(**kwargs)
+            resp.usage = SimpleNamespace(
+                input_tokens=1_000,
+                output_tokens=400,
+                output_tokens_details=SimpleNamespace(reasoning_tokens=300),
+                input_tokens_details=SimpleNamespace(cached_tokens=0),
+            )
+            return resp
+
+    fake = _UsageResponses(_recovery_script())
+    with metered() as ledger:
+        run = await run_task_hours_recovery_agent(
+            _flagged(),
+            client=_FakeClient(fake),
+            model="gpt-5",
+            max_iterations=10,
+            retrieval_backend=_stub_backend,
+            consensus_fn=distance_weighted_consensus,
+        )
+    rounds = len(fake.create_calls)
+    assert run.usage["input_tokens"] == 1_000 * rounds
+    assert run.usage["reasoning_tokens"] == 300 * rounds
+    trinity = ledger.by_source()["trinity_recovery"]
+    assert (trinity.calls, trinity.output_tokens) == (rounds, 400 * rounds)
+
+
+async def test_recovery_without_usage_reports_none():
+    run = await run_task_hours_recovery_agent(
+        _flagged(),
+        client=_FakeClient(_FakeResponses(_recovery_script())),
+        model="gpt-5-mini",
+        max_iterations=10,
+        retrieval_backend=_stub_backend,
+        consensus_fn=distance_weighted_consensus,
+    )
+    assert run.usage is None
