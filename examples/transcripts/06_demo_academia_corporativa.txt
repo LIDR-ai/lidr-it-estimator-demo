@@ -1,0 +1,67 @@
+Reunión de descubrimiento — Proyecto "Academia Lumen" (formación corporativa)
+Cliente: Clara Montes (directora de Personas y Talento) y Diego Ferrer (CIO), Grupo Lumen Energía
+Consultor: equipo de estimación
+Fecha: reunión inicial
+
+[00:00:09] Consultor: Gracias por el tiempo. Contadnos el contexto y qué queréis conseguir.
+
+[00:00:20] Clara: Somos Grupo Lumen, una energética con unos nueve mil empleados entre oficinas,
+plantas y técnicos de campo. Hoy la formación está repartida en tres herramientas y en muchas hojas
+de cálculo. Cada año tenemos auditorías de formación obligatoria en seguridad y prevención, y
+reunir las evidencias nos cuesta semanas. Queremos una academia corporativa propia: Academia Lumen.
+
+[00:01:15] Consultor: Empecemos por lo que ve el empleado.
+
+[00:01:22] Clara: Un catálogo de cursos con su ficha, sus requisitos y la duración. Los cursos
+tienen lecciones en vídeo y documentos, y el empleado tiene que poder seguir su progreso y retomar
+donde lo dejó. Muchos técnicos ven los vídeos desde el móvil en planta, así que tiene que ir bien
+con conexiones regulares.
+
+[00:02:30] Clara: Luego, evaluaciones. Exámenes tipo test con banco de preguntas y corrección
+automática, y prácticas que corrige un formador con una rúbrica. Para los cursos de seguridad, el
+examen final tiene que ser supervisado: hoy lo hacemos presencial y queremos poder hacerlo en
+remoto, con control de identidad y de que no se consulta nada durante el examen.
+
+[00:03:45] Consultor: Anotado. ¿Qué pasa cuando alguien aprueba?
+
+[00:03:52] Clara: Se emite un certificado con código verificable. Y aquí viene lo importante para
+nosotros: las habilitaciones. Hay técnicos que solo pueden trabajar en alta tensión si tienen tres
+cursos vigentes, y cada uno caduca a los dos o tres años. Necesitamos un motor de habilitaciones
+que calcule, para cada técnico, si está habilitado hoy y cuándo deja de estarlo, y que avise con
+tiempo. Esa lógica es nuestra y es la que más nos preocupa: si falla, alguien trabaja sin estar
+habilitado.
+
+[00:05:20] Diego: Por la parte de sistemas, el login tiene que ser con nuestro directorio
+corporativo, inicio de sesión único con Azure AD. Y los empleados, departamentos y responsables
+salen de nuestro sistema de RR. HH., que es SAP SuccessFactors: hay que sincronizar la plantilla
+cada día, altas, bajas y cambios de puesto. Y cuando alguien cambia de puesto, que se le asignen
+automáticamente los cursos obligatorios del nuevo puesto.
+
+[00:06:40] Clara: Y los avisos: correos y notificaciones en la app cuando te asignan un curso,
+cuando te queda poco para que caduque una habilitación y recordatorios a los responsables de
+equipo.
+
+[00:07:20] Consultor: ¿Y la gestión interna?
+
+[00:07:26] Clara: Un panel de administración para crear cursos, subir contenidos, asignar
+formación por departamento y cargar históricos de formación de golpe desde Excel. Y cuadros de
+mando: cumplimiento de formación obligatoria por planta y por departamento, horas de formación y
+habilitaciones que caducan en los próximos noventa días. Para las auditorías, un informe
+exportable con las evidencias de cada empleado.
+
+[00:08:30] Diego: En lo técnico: en nuestra nube de Azure, con despliegue automático,
+monitorización, cifrado de datos y registro de auditoría de quién consulta qué, porque hay datos
+personales. Y pruebas automáticas, que es un sistema crítico para nosotros.
+
+[00:09:15] Consultor: Resumo: catálogo de cursos con lecciones en vídeo y progreso, motor de
+exámenes, corrección con rúbrica, examen supervisado en remoto, certificados verificables, motor
+de habilitaciones con caducidades, login único con Azure AD, sincronización diaria con SAP
+SuccessFactors y asignación automática por puesto, notificaciones, panel de administración con
+importación de históricos, cuadros de mando de cumplimiento, informe para auditoría, e
+infraestructura en Azure con seguridad y pruebas. ¿Prioridad?
+
+[00:09:55] Diego: El catálogo, los exámenes, los certificados y las habilitaciones son lo
+primero, porque la auditoría es en septiembre. El examen supervisado puede ir en una segunda fase,
+pero lo queremos estimado.
+
+[00:10:20] Consultor: Perfecto. Os preparamos la estimación por módulos y tareas, y una propuesta.

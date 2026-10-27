@@ -29,7 +29,12 @@ from app.ingestion.parsers.registry import ParserRegistry, default_registry
 from app.generation.cag.exact import EstimationCache
 from app.domain.estimation_service import EstimationService
 from app.domain.graph.activity import GraphActivityLog
-from app.foundation.llm.jev import HttpJevClassifier, JevClassifier
+from app.foundation.llm.jev import (
+    FallbackJevClassifier,
+    HeuristicJevClassifier,
+    HttpJevClassifier,
+    JevClassifier,
+)
 from app.foundation.llm.runtime_config import RuntimeModelConfig, RuntimeRetrievalConfig
 from app.foundation.llm.wrapper import LLMWrapper
 from app.foundation.persistence.database import get_async_session_factory
@@ -135,13 +140,19 @@ def get_jev_classifier() -> JevClassifier | None:
     settings = get_settings()
     if not settings.GRAPH_JEV_ENABLED or not settings.JEV_API_KEY:
         return None
-    return HttpJevClassifier(
+    http = HttpJevClassifier(
         api_key=settings.JEV_API_KEY,
         base_url=settings.JEV_API_BASE_URL,
         model=settings.JEV_MODEL,
         timeout=settings.JEV_TIMEOUT,
         max_concurrency=settings.JEV_MAX_CONCURRENCY,
+        retries=settings.JEV_RETRIES,
     )
+    if settings.JEV_FALLBACK == "simulated":
+        return FallbackJevClassifier(
+            http, HeuristicJevClassifier(min_reliability=settings.GRAPH_JEV_MIN_RELIABILITY)
+        )
+    return http
 
 
 @lru_cache

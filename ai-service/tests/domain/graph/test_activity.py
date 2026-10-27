@@ -41,6 +41,21 @@ def test_describe_recover_reads_total_days():
     assert "292 jornadas" in line["message"]
 
 
+def test_describe_recover_shows_the_demo_sized_trinity_run():
+    update = {
+        "estimate": {"total_engineer_days": 100},
+        "trinity_run": {
+            "doubtful": 32,
+            "tasks": 10,
+            "recovered": 4,
+            "iterations": 3,
+            "max_iterations": 3,
+        },
+    }
+    (line,) = describe_node("recover_and_handover", update)
+    assert "Trinity recuperó 4/10 (de 32 dudosas, 3/3 vueltas)" in line["message"]
+
+
 def test_describe_analysis_reads_confidence_and_ratio():
     update = {"analysis_report": {"overall_confidence": "medium", "grounded_task_ratio": 0.59}}
     (line,) = describe_node("analysis_agent", update)
@@ -66,3 +81,16 @@ def test_activity_log_in_process_fallback_appends_reads_and_resets():
     # Reset clears the run (fresh START).
     log.reset("run-1")
     assert log.read("run-1") == []
+
+
+def test_describe_recover_labels_a_simulated_jev():
+    update = {
+        "estimate": {"total_engineer_days": 10},
+        "jev_decisions": [
+            {"task": "a", "source": "simulated"},
+            {"task": "b", "source": "simulated"},
+        ],
+        "task_hours": [{"task": "a", "accepted_by": "jev_simulated"}, {"task": "b"}],
+    }
+    (line,) = describe_node("recover_and_handover", update)
+    assert "Jev (simulado) aceptó 1/2 · Jev no disponible" in line["message"]

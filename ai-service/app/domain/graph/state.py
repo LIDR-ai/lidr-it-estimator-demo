@@ -103,6 +103,8 @@ class EstimationState(TypedDict, total=False):
     estimate: Optional[dict]
     # Jev triage verdicts from the recovery join (audit; written once, last-write-wins).
     jev_decisions: Optional[list[dict]]
+    # Trinity's demo-sized run: doubtful / handed over / recovered / iterations (+ cap).
+    trinity_run: Optional[dict]
 
     # --- analysis_agent + human gate 2 ------------------------------------- #
     analysis_report: Optional[dict]  # ReliabilityReport.model_dump()

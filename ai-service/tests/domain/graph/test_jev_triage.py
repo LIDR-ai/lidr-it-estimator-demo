@@ -14,7 +14,7 @@ from app.config import get_settings
 from app.domain.graph.agents._common import jev_accepts, jev_candidate
 from app.domain.graph.agents.hours import recover_and_handover
 from app.domain.schemas.agent_trace import AgentTrace
-from app.foundation.llm.jev import JevVerdict
+from app.foundation.llm.jev import FallbackJevClassifier, HeuristicJevClassifier, JevVerdict
 from app.generation.agentic.agent_schemas import AgentTaskDerivation, AgentTaskHoursRun
 
 MIN = 0.15
@@ -198,3 +198,125 @@ async def test_jev_disabled_is_the_pre_jev_behaviour(monkeypatch, recovery):
     assert sorted(recovery[0]) == ["good-enough", "shaky", "unmatched", "weak"]
     assert cmd.update["jev_decisions"] == []
     assert not any(t.get("accepted_by") for t in cmd.update["task_hours"])
+
+
+# --- demo-sized Trinity ----------------------------------------------------- #
+
+
+async def test_trinity_gets_only_the_worst_doubtful_tasks_under_the_cap(monkeypatch, recovery):
+    _with_jev(monkeypatch, None)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "GRAPH_RECOVERY_MAX_TASKS", 3)
+    seen: dict = {}
+
+    async def _capture(flagged, **kwargs):
+        seen.update(kwargs, tasks=[f.task for f in flagged])
+        return AgentTaskHoursRun(derivations=[], trace=AgentTrace(), iterations=2)
+
+    monkeypatch.setattr("app.domain.graph.agents.hours.run_task_hours_recovery_agent", _capture)
+    rows = [
+        _row("solid", reliability=0.9),  # not doubtful
+        _row("r30", reliability=0.30),
+        _row("r05", reliability=0.05),
+        _row("none-1", has_match=False),
+        _row("r20", reliability=0.20),
+        _row("none-2", has_match=False),
+    ]
+
+    cmd = await recover_and_handover(_state(rows))
+
+    # No analog first (original order kept), then lowest reliability; r20/r30 left out.
+    assert seen["tasks"] == ["none-1", "none-2", "r05"]
+    assert seen["max_iterations"] == settings.GRAPH_RECOVERY_MAX_ITERATIONS
+    left = {t["task"]: t for t in cmd.update["task_hours"]}
+    assert left["r30"]["estimated_hours"] == 40.0  # untouched retrieval row, still doubtful
+    assert cmd.update["trinity_run"] == {
+        "doubtful": 5,
+        "tasks": 3,
+        "recovered": 0,
+        "iterations": 2,
+        "max_iterations": settings.GRAPH_RECOVERY_MAX_ITERATIONS,
+    }
+
+
+async def test_trinity_task_cap_zero_means_no_limit(monkeypatch, recovery):
+    _with_jev(monkeypatch, None)
+    monkeypatch.setattr(get_settings(), "GRAPH_RECOVERY_MAX_TASKS", 0)
+
+    await recover_and_handover(_state(ROWS))
+
+    assert len(recovery[0]) == 4
+
+
+def test_demo_trinity_defaults():
+    settings = get_settings()
+    assert settings.GRAPH_RECOVERY_MAX_ITERATIONS == 3  # search → derive → stop
+    assert settings.GRAPH_RECOVERY_MAX_TASKS == 10
+
+
+# --- labelled fallback when Jev is down ------------------------------------------ #
+
+
+async def test_simulated_fallback_is_labelled_and_never_passes_for_jev(monkeypatch, recovery):
+    # Pin the bar: a demo .env may lower it, and this test is about the 0.7 cut.
+    monkeypatch.setattr(get_settings(), "GRAPH_JEV_ACCEPT_CONFIDENCE", 0.7)
+    _with_jev(monkeypatch, FallbackJevClassifier(_FakeJev(fail=True), HeuristicJevClassifier()))
+
+    cmd = await recover_and_handover(_state(ROWS))
+
+    rows = {t["task"]: t for t in cmd.update["task_hours"]}
+    # good-enough (rel 0.30 → p 0.875) clears our 0.7 bar; shaky (0.20 → 0.625) does not.
+    assert rows["good-enough"]["accepted_by"] == "jev_simulated"
+    assert sorted(recovery[0]) == ["shaky", "unmatched", "weak"]
+    assert all(d["source"] == "simulated" for d in cmd.update["jev_decisions"])
+    assert cmd.update["errors"] == ["jev: unavailable (down) · 2 decision(s) simulated"]
+    tasks = {t["name"]: t for t in cmd.update["estimate"]["modules"][0]["tasks"]}
+    assert tasks["good-enough"]["accepted_by"] == "jev_simulated"
+
+
+async def test_real_jev_tokens_are_metered_and_simulated_ones_are_free(monkeypatch, recovery):
+    from app.foundation.llm.usage_meter import metered
+
+    class _MeteredJev:
+        async def classify(self, tasks):
+            return [
+                JevVerdict(
+                    module=t.module,
+                    task=t.task,
+                    decision="escalate",
+                    probabilities={"accept": 0.1, "escalate": 0.9},
+                    model="jev-1.14.0",
+                    usage={"input_tokens": 400, "output_tokens": 30},
+                )
+                for t in tasks
+            ]
+
+    _with_jev(monkeypatch, _MeteredJev())
+    with metered() as ledger:
+        await recover_and_handover(_state(ROWS))
+    jev = ledger.by_source()["jev"]
+    assert (jev.calls, jev.input_tokens, jev.output_tokens) == (2, 800, 60)
+    assert jev.cost_usd == round(800 * 0.042 / 1_000_000, 6)
+
+    _with_jev(monkeypatch, FallbackJevClassifier(_FakeJev(fail=True), HeuristicJevClassifier()))
+    with metered() as ledger:
+        await recover_and_handover(_state(ROWS))
+    assert "jev" not in ledger.by_source()
+
+
+async def test_jev_receives_the_retrieval_neighbours_as_evidence(monkeypatch, recovery):
+    seen = {}
+
+    class _Capture:
+        async def classify(self, tasks):
+            seen.update({t.task: t.neighbors for t in tasks})
+            return []
+
+    row = _row("good-enough", reliability=0.3)
+    row["neighbors"] = [{"source_id": 1, "estimated_hours": 38, "distance": 0.22}]
+    _with_jev(monkeypatch, _Capture())
+
+    await recover_and_handover(_state([row, _row("shaky", reliability=0.2)]))
+
+    assert seen["good-enough"] == row["neighbors"]
+    assert seen["shaky"] is None  # no evidence → nothing sent, not an empty list

@@ -113,9 +113,20 @@ def describe_node(node_name: str, update) -> list[dict]:
                 accepted = sum(
                     1
                     for t in (_first(updates, "task_hours") or [])
-                    if t.get("accepted_by") == "jev"
+                    if t.get("accepted_by") in ("jev", "jev_simulated")
                 )
-                tail += f" · Jev aceptó {accepted}/{len(jev)}"
+                if any(v.get("source") == "simulated" for v in jev):
+                    # Never let the stand-in pass for the real Jev on screen.
+                    tail += f" · Jev (simulado) aceptó {accepted}/{len(jev)} · Jev no disponible"
+                else:
+                    tail += f" · Jev aceptó {accepted}/{len(jev)}"
+            trinity = _first(updates, "trinity_run") or {}
+            if trinity.get("tasks"):
+                tail += (
+                    f" · Trinity recuperó {trinity.get('recovered', 0)}/{trinity['tasks']}"
+                    f" (de {trinity.get('doubtful', trinity['tasks'])} dudosas,"
+                    f" {trinity.get('iterations', 0)}/{trinity.get('max_iterations')} vueltas)"
+                )
             return [{"node": key, "label": label, "message": f"Estimación construida{tail}"}]
 
         if node_name == "analysis_agent":

@@ -29,12 +29,16 @@ MODEL_COSTS: dict[str, dict[str, float]] = {
     "claude-haiku-4-5": {"input": 1.00, "output": 5.00},
     "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
     "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
+    # Jev (TypeSafe AI): $42 per BILLION input tokens; output tokens are free.
+    "jev": {"input": 0.042, "output": 0.0},
 }
 
 
 def _normalise_model_name(model: str) -> str:
-    """Strip provider prefixes like ``anthropic/`` that LiteLLM may emit."""
-    return model.split("/", 1)[1] if "/" in model else model
+    """Strip provider prefixes like ``anthropic/`` that LiteLLM may emit, and fold every
+    Jev alias/version (``jev-latest``, ``jev-1.14.0``…) into the one priced ``jev``."""
+    name = model.split("/", 1)[1] if "/" in model else model
+    return "jev" if name == "jev" or name.startswith("jev-") else name
 
 
 def _estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:

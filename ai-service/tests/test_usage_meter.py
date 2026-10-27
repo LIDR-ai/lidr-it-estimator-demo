@@ -25,18 +25,24 @@ def test_ledger_accumulates_and_groups_with_list_prices():
         )
         record("trinity_recovery", "gpt-5", input_tokens=2_000, output_tokens=100)
         record("ReliabilityReport", "gpt-4o", input_tokens=400, output_tokens=200)
-        record("jev", "typesafe-ai/jev", cost_usd=0.01)
+        record("jev", "jev-1.14.0", input_tokens=1_000_000, output_tokens=500)
 
     total = ledger.totals()
-    assert (total.calls, total.input_tokens, total.output_tokens) == (4, 3_400, 800)
+    assert (total.calls, total.input_tokens, total.output_tokens) == (4, 1_003_400, 1_300)
     trinity = ledger.by_source()["trinity_recovery"]
     assert (trinity.calls, trinity.reasoning_tokens) == (2, 300)
     assert trinity.cost_usd == _estimate_cost("gpt-5", 3_000, 600)
-    assert ledger.by_source()["jev"].cost_usd == 0.01  # flat fee, no tokens
-    assert ledger.by_model()["jev"].calls == 1  # model prefix normalised
+    assert ledger.by_source()["jev"].cost_usd == 0.042  # $0.042/M input, output free
+    assert ledger.by_model()["jev"].calls == 1  # jev-1.14.0 folded into "jev"
     assert total.cost_usd == round(
-        _estimate_cost("gpt-5", 3_000, 600) + _estimate_cost("gpt-4o", 400, 200) + 0.01, 6
+        _estimate_cost("gpt-5", 3_000, 600) + _estimate_cost("gpt-4o", 400, 200) + 0.042, 6
     )
+
+
+def test_every_jev_alias_and_version_is_priced_as_jev():
+    for name in ("jev", "jev-latest", "jev-preview", "jev-1.13.0", "jev-1.14.0"):
+        assert _estimate_cost(name, 2_000_000, 1_000_000) == 0.084
+    assert _estimate_cost("jevons-model", 1_000_000, 0) == 0.0  # not a Jev name
 
 
 def test_nested_ledgers_are_isolated():

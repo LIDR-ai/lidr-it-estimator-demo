@@ -40,7 +40,7 @@ def _disable_jev(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Jev is ON by default (``GRAPH_JEV_ENABLED=True``) and only needs a key to start
     making HTTPS calls, so a local ``.env`` with ``JEV_API_KEY`` would send every graph
-    test to jevai.org. Pinning the key to ``None`` makes ``get_jev_classifier()``
+    test to api.typesafe.ai. Pinning the key to ``None`` makes ``get_jev_classifier()``
     return ``None``; the triage tests inject their own fake classifier on purpose.
     """
     from app.dependencies import get_jev_classifier

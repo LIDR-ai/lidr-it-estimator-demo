@@ -266,18 +266,32 @@ class Settings(BaseSettings):
     # JEV_API_KEY is blank (no key → no client → the pre-Jev behaviour), so local runs
     # and CI never need Jev. Any Jev failure escalates (the pre-Jev behaviour).
     GRAPH_JEV_ENABLED: bool = True
-    JEV_API_BASE_URL: str = "https://www.jevai.org"
-    JEV_API_KEY: str | None = None  # personal key from https://www.jevai.org/agent/keys
-    JEV_MODEL: str = "typesafe-ai/jev"
-    JEV_TIMEOUT: float = 10.0
+    # TypeSafe AI's official API (POST /v1/systemone); keys from console.typesafe.ai/keys.
+    JEV_API_BASE_URL: str = "https://api.typesafe.ai"
+    JEV_API_KEY: str | None = None
+    JEV_MODEL: str = "jev-latest"  # alias; GET /v1/models lists what the account can use
+    JEV_TIMEOUT: float = 30.0
     JEV_MAX_CONCURRENCY: int = 8
+    # Retries on 408/429/5xx (529 = overloaded) and timeouts/connection errors, with
+    # exponential backoff — the official SDK's default. Contract errors (400/401/422)
+    # are never retried. After them, the batch's circuit opens and the rest are not sent.
+    JEV_RETRIES: int = 2
+    # What a task gets when Jev cannot answer: "escalate" (fail safe → Trinity) or
+    # "simulated" — a deterministic heuristic stand-in, ALWAYS labelled "Jev (simulado)"
+    # in the UI/CLI. For demos while the real API is unavailable; never silent.
+    JEV_FALLBACK: Literal["escalate", "simulated"] = "escalate"
     # Below this the analog is too weak to be worth asking: straight to Trinity.
     GRAPH_JEV_MIN_RELIABILITY: float = 0.15
     # Jev's probabilities are signals, not authorization — WE set the accept bar.
     GRAPH_JEV_ACCEPT_CONFIDENCE: float = 0.7
-    # Jev reports no token usage and publishes no price; the token comparison
-    # (scripts/compare_jev_tokens.py) prices each Jev call at this flat fee (USD).
-    JEV_COST_PER_CALL_USD: float = 0.0
+    # Trinity (the gpt-5 recovery loop) inside the S13 graph — demo-sized on purpose,
+    # independent of AGENT_MAX_ITERATIONS (shared with the S12 endpoint). 3 is the
+    # smallest useful cap: turn 1 searches, turn 2 derives the hours, turn 3 stops —
+    # with 2 the cap cuts before any derive_task_hours runs. MAX_TASKS hands Trinity
+    # only the N worst doubtful tasks (no analog first, then lowest reliability); the
+    # rest stay flagged as unrecovered. 0 = no limit.
+    GRAPH_RECOVERY_MAX_ITERATIONS: int = 3
+    GRAPH_RECOVERY_MAX_TASKS: int = 10
     # classifier's complexity → structure_agent reasoning effort. A richer transcript
     # gets more thinking budget; a simple one stays cheap. Kept as a plain dict so the
     # mapping is data, not a code branch.

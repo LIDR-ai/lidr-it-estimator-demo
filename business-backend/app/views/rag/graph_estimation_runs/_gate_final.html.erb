@@ -39,7 +39,10 @@
                 <div class="min-w-0">
                   <div class="text-white/80 truncate">
                     <%= task.name %>
-                    <% if task.jev_accepted? %>
+                    <% if task.jev_simulated? %>
+                      <span class="ml-1 inline-flex items-center rounded border border-dashed border-white/30 bg-white/5 px-1.5 py-0.5 text-[10px] font-bold text-white/60"
+                            title="Jev no estaba disponible: decidió un sustituto heurístico determinista (JEV_FALLBACK=simulated), no el modelo de TypeSafe AI">✓ Jev (simulado)</span>
+                    <% elsif task.jev_accepted? %>
                       <span class="ml-1 inline-flex items-center rounded border border-brand/40 bg-brand/10 px-1.5 py-0.5 text-[10px] font-bold text-brand-soft"
                             title="Jev (TypeSafe AI) aceptó las horas del histórico sin pasar por el agente de recuperación">✓ Jev</span>
                     <% end %>

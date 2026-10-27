@@ -94,9 +94,21 @@ def _install_stub_mixed_hours() -> None:
     Cycles every task through four buckets so a demo always exercises both deciders
     of the recovery join: solid (accepted, no one asked), the Jev band (0.15–0.35 →
     Jev decides), very weak (straight to Trinity) and no match (straight to Trinity).
+    The Jev band carries synthetic neighbours — half close and agreeing, half distant
+    and disagreeing — so the real Jev has evidence to accept OR escalate.
     """
     from app.domain.graph.agents import hours as hours_mod
-    from app.generation.rag.schemas import TaskHoursEstimate
+    from app.generation.rag.schemas import TaskHoursEstimate, TaskNeighbor
+
+    def _neighbors(seed: int, hours: int) -> list[TaskNeighbor]:
+        if (seed // 4) % 2 == 0:  # close analogs that agree
+            spread = [(-2, 0.22), (0, 0.25), (2, 0.27)]
+        else:  # distant analogs that disagree
+            spread = [(-hours + 4, 0.55), (hours, 0.58)]
+        return [
+            TaskNeighbor(source_id=i, estimated_hours=max(1, hours + dh), distance=d)
+            for i, (dh, d) in enumerate(spread)
+        ]
 
     async def _stub_estimate_one(module, name, description, *, top_k, distance_threshold, **kwargs):
         seed = sum(ord(c) for c in f"{module}/{name}")
@@ -112,7 +124,7 @@ def _install_stub_mixed_hours() -> None:
             reliability=reliability,
             has_match=True,
             dispersion=0.1,
-            neighbors=[],
+            neighbors=_neighbors(seed, hours) if bucket == 1 else [],
         )
 
     hours_mod.estimate_one = _stub_estimate_one  # type: ignore[assignment]
@@ -160,6 +172,8 @@ def _render(state: dict) -> str:
             flag = "" if task.get("has_match") else "  ⚠ flagged"
             if task.get("accepted_by") == "jev":
                 flag += "  ✓ Jev"
+            elif task.get("accepted_by") == "jev_simulated":
+                flag += "  ✓ Jev (simulated)"
             lines.append(f"      - {task.get('name')}: {hours_text}{flag}")
     lines.append(
         f"  TOTAL: {estimate.get('total_engineer_days')}d "
@@ -167,16 +181,39 @@ def _render(state: dict) -> str:
     )
 
     decisions = state.get("jev_decisions") or []
-    lines += ["", "JEV TRIAGE (recover_and_handover — before Trinity)"]
+    lines += ["", "JEV TRIAGE / TRINITY (recover_and_handover)"]
     if not decisions:
         lines.append("  (no task in the Jev band, or Jev disabled / no JEV_API_KEY)")
     for d in decisions:
         p_accept = (d.get("probabilities") or {}).get("accept")
         p_text = f"p(accept)={p_accept:.2f}" if p_accept is not None else "p(accept)=?"
-        err = f"  ERROR: {d['error']}" if d.get("error") else ""
-        lines.append(f"  - {d.get('task')}: {d.get('decision')} ({p_text}){err}")
-    accepted = sum(1 for t in (state.get("task_hours") or []) if t.get("accepted_by") == "jev")
-    lines.append(f"  Jev accepted {accepted}/{len(decisions)}; the rest went to Trinity")
+        err = f"  ERROR: {d['error'].splitlines()[0]}" if d.get("error") else ""
+        tag = " [simulated]" if d.get("source") == "simulated" else ""
+        if d.get("model"):
+            tag += f" [{d['model']}]"
+        lines.append(f"  - {d.get('task')}: {d.get('decision')}{tag} ({p_text}){err}")
+    accepted = sum(
+        1
+        for t in (state.get("task_hours") or [])
+        if t.get("accepted_by") in ("jev", "jev_simulated")
+    )
+    simulated = [d for d in decisions if d.get("fallback_reason")]
+    who = "Jev (SIMULATED stand-in)" if simulated else "Jev"
+    lines.append(f"  {who} accepted {accepted}/{len(decisions)}; the rest went to Trinity")
+    if simulated:
+        lines.append(
+            f"  ⚠ real Jev unavailable ({simulated[0].get('fallback_reason')}): "
+            f"{len(simulated)} decision(s) came from the labelled heuristic (JEV_FALLBACK=simulated)"
+        )
+    trinity = state.get("trinity_run") or {}
+    if trinity:
+        skipped = trinity.get("doubtful", 0) - trinity.get("tasks", 0)
+        lines.append(
+            f"  Trinity: {trinity.get('tasks', 0)} task(s) handed over"
+            f" ({skipped} more left flagged by the demo cap),"
+            f" recovered {trinity.get('recovered', 0)},"
+            f" {trinity.get('iterations', 0)}/{trinity.get('max_iterations')} iterations"
+        )
 
     report = state.get("analysis_report") or {}
     lines += ["", "RELIABILITY REPORT (analysis_agent)"]
@@ -232,6 +269,7 @@ async def _main_async(args: argparse.Namespace) -> int:
     elif args.stub:
         _install_stub_hours()
 
+    from app.config import get_settings
     from app.dependencies import get_jev_classifier
 
     hours_mode = (
@@ -244,22 +282,29 @@ async def _main_async(args: argparse.Namespace) -> int:
     print(f"transcript    : {transcript_path}")
     print(f"checkpointer  : {'MemorySaver' if args.memory else 'AsyncPostgresSaver (pool)'}")
     print(f"per-task hours: {hours_mode}")
-    print(f"jev triage    : {'ON' if get_jev_classifier() else 'off (disabled or no JEV_API_KEY)'}")
+    jev_state = "ON" if get_jev_classifier() else "off (disabled or no JEV_API_KEY)"
+    if get_jev_classifier() and get_settings().JEV_FALLBACK == "simulated":
+        jev_state += " · fallback simulated (labelled)"
+    print(f"jev triage    : {jev_state}")
+    settings = get_settings()
+    task_cap = settings.GRAPH_RECOVERY_MAX_TASKS or "no"
+    print(
+        f"trinity cap   : {settings.GRAPH_RECOVERY_MAX_ITERATIONS} iterations · max {task_cap} tasks"
+    )
     print(f"estimation_id : {estimation_id}\n")
 
-    if args.memory:
-        from langgraph.checkpoint.memory import MemorySaver
+    with metered() as ledger:
+        if args.memory:
+            from langgraph.checkpoint.memory import MemorySaver
 
-        graph = build_graph(MemorySaver())
-        with metered() as ledger:
-            with metered() as ledger:
-                state = await _run_to_completion(graph, transcript, estimation_id)
-    else:
-        from app.domain.graph.checkpointer import open_checkpointer
-
-        async with open_checkpointer() as checkpointer:
-            graph = build_graph(checkpointer)
+            graph = build_graph(MemorySaver())
             state = await _run_to_completion(graph, transcript, estimation_id)
+        else:
+            from app.domain.graph.checkpointer import open_checkpointer
+
+            async with open_checkpointer() as checkpointer:
+                graph = build_graph(checkpointer)
+                state = await _run_to_completion(graph, transcript, estimation_id)
 
     rendered = _render(state) + "\n\n" + _render_usage(ledger)
     print("\n" + rendered)

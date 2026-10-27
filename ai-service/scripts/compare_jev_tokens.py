@@ -23,13 +23,14 @@ Usage::
     docker compose exec ai-service python scripts/compare_jev_tokens.py \\
         --transcript /tmp/transcript.txt --out /tmp/cmp.md
 
-    # Jev SIMULATED (deterministic, accepts 60% of its candidates) — for the demo
-    # projection while the real API is down; labelled SIMULATED in the report
+    # Jev SIMULATED (deterministic, accepts 60% of its candidates) — a what-if
+    # projection with a fixed acceptance rate; labelled SIMULATED in the report
     docker compose exec ai-service python scripts/compare_jev_tokens.py \\
         --transcript /tmp/transcript.txt --stub-mixed --simulate-jev-accept-rate 0.6
 
 Prices come from ``MODEL_COSTS`` (list prices, cached-input discount ignored). Jev
-reports no tokens: it is counted per call and priced at ``JEV_COST_PER_CALL_USD``.
+reports its own token usage (TypeSafe bills input tokens only); the simulated Jev
+makes no calls and costs nothing.
 Retrieval embeddings are identical in both branches and are not metered.
 """
 
@@ -140,7 +141,11 @@ async def run_branch(name: str, transcript: str, jev) -> dict:
 
     doubtful = [k for k, row in retrieved.items() if flag_reason(row) is not None]
     decisions = values.get("jev_decisions") or []
-    accepted = sum(1 for t in values.get("task_hours") or [] if t.get("accepted_by") == "jev")
+    accepted = sum(
+        1
+        for t in values.get("task_hours") or []
+        if t.get("accepted_by") in ("jev", "jev_simulated")
+    )
     return {
         "name": name,
         "ledger": ledger,
@@ -162,7 +167,7 @@ _LABELS = {
     "structure_agent": "structure (Neo, gpt-5)",
     "trinity_recovery": "recovery (Trinity, gpt-5)",
     "ReliabilityReport": "analysis (Oracle)",
-    "jev": "Jev triage (calls)",
+    "jev": "Jev triage (TypeSafe)",
 }
 
 
@@ -186,8 +191,8 @@ def render(
     on: dict | list[dict],
     *,
     simulated: bool,
-    jev_fee: float,
     max_iterations: int | None = None,
+    trinity_max_tasks: int | None = None,
 ) -> str:
     """Markdown report. ``off``/``on`` may be one run each or a list of repeats; the
     detailed per-agent table shows the first pair, the savings use the MEANS."""
@@ -206,8 +211,8 @@ def render(
     lines = [
         "# Token comparison · graph without Jev vs with Jev",
         "",
-        f"Jev mode: **{jev_label}** · Jev fee per call: ${jev_fee:.4f}"
-        + (" (unpublished price → 0)" if not jev_fee else ""),
+        f"Jev mode: **{jev_label}**"
+        + (" (no Jev calls: no Jev tokens)" if simulated else " · priced from its reported usage"),
         "",
         "## Common leg (paid once, identical for both)",
         "",
@@ -317,11 +322,22 @@ def render(
     lines += [
         "",
         "Caveats: gpt-5 token counts vary between runs (re-run for a range); Trinity works "
-        "in BATCH and is capped at AGENT_MAX_ITERATIONS round-trips — when it hits the cap "
+        "in BATCH and is capped at GRAPH_RECOVERY_MAX_ITERATIONS round-trips — when it hits the cap "
         "its cost tracks the cap, not the task count, and the saving is UNDERSTATED; the "
         "saving per accepted task is an average, not a constant; prices "
         "are list prices from MODEL_COSTS; embeddings are not metered (identical in both).",
     ]
+    if trinity_max_tasks is not None:
+        lines.append(
+            "Trinity task cap (GRAPH_RECOVERY_MAX_TASKS): "
+            + (
+                f"**{trinity_max_tasks}** — with a cap below the doubtful count both branches "
+                "hand Trinity the same number of tasks and Jev's saving shrinks or vanishes."
+                if trinity_max_tasks > 0
+                else "**off** for this comparison, so every task Jev does not accept reaches "
+                "Trinity and the saving is measurable (the demo graph caps it)."
+            )
+        )
     if simulated:
         lines.append(
             "**SIMULATED**: Jev's decisions come from a deterministic stand-in, not the real "
@@ -344,6 +360,10 @@ async def _main_async(args: argparse.Namespace) -> int:
     from app.dependencies import get_jev_classifier
 
     settings = get_settings()
+    # The graph hands Trinity at most GRAPH_RECOVERY_MAX_TASKS doubtful tasks. Under that
+    # cap both branches would send it the same number and hide Jev's effect, so the
+    # comparison runs uncapped unless asked otherwise (Settings is a cached singleton).
+    settings.GRAPH_RECOVERY_MAX_TASKS = args.trinity_max_tasks
     if args.stub_mixed:
         run_graph_s13._install_stub_mixed_hours()
     elif args.stub:
@@ -378,8 +398,8 @@ async def _main_async(args: argparse.Namespace) -> int:
         offs,
         ons,
         simulated=simulated,
-        jev_fee=settings.JEV_COST_PER_CALL_USD,
-        max_iterations=settings.AGENT_MAX_ITERATIONS,
+        max_iterations=settings.GRAPH_RECOVERY_MAX_ITERATIONS,
+        trinity_max_tasks=settings.GRAPH_RECOVERY_MAX_TASKS,
     )
     print("\n" + report)
     if args.out:
@@ -408,6 +428,13 @@ def main() -> int:
         type=int,
         default=1,
         help="Run each branch N times and report mean/min/max (gpt-5 is noisy; 3 is a good demo value).",
+    )
+    parser.add_argument(
+        "--trinity-max-tasks",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Cap the doubtful tasks handed to Trinity (default 0 = no cap, so Jev's saving shows).",
     )
     parser.add_argument("--out", help="Write the markdown report to this file.")
     args = parser.parse_args()

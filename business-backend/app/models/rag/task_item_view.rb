@@ -22,7 +22,8 @@ module Rag
     attribute :rate_eur_per_hour, :integer
     attribute :has_match, :boolean, default: true
     # Graph flow: "jev" when Jev's triage accepted the retrieved hours as is (they never
-    # went to the recovery agent). Nil everywhere else.
+    # went to the recovery agent); "jev_simulated" when the labelled heuristic stand-in
+    # decided because the real Jev was unavailable (JEV_FALLBACK=simulated). Nil elsewhere.
     attribute :accepted_by, :string
 
     attr_reader :hours_range
@@ -48,7 +49,9 @@ module Rag
     # Red flag: no historical analog was found, so no hours were derived.
     def flagged? = has_match == false
 
-    def jev_accepted? = accepted_by == "jev"
+    def jev_accepted? = %w[jev jev_simulated].include?(accepted_by)
+
+    def jev_simulated? = accepted_by == "jev_simulated"
 
     def reliability_pct = hours_reliability ? (hours_reliability * 100).round : nil
 

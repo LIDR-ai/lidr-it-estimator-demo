@@ -53,6 +53,10 @@ def flag_reason(task_hours: dict) -> str | None:
     return None
 
 
+# ``accepted_by`` values meaning "Jev's triage accepted these hours" (real or labelled stand-in).
+JEV_ACCEPTED_BY = frozenset({"jev", "jev_simulated"})
+
+
 def jev_candidate(task_hours: dict, min_reliability: float) -> bool:
     """Is a doubtful row eligible for Jev triage (accept as is vs. escalate)?
 
@@ -69,6 +73,16 @@ def jev_candidate(task_hours: dict, min_reliability: float) -> bool:
         return True
     reliability = task_hours.get("reliability")
     return reliability is not None and reliability >= min_reliability
+
+
+def recovery_priority(task_hours: dict) -> tuple[int, float]:
+    """Sort key for the doubtful rows handed to Trinity: worst first.
+
+    No usable hours (no match, or no point estimate) come first, then the rest by
+    ascending reliability (a missing reliability counts as 0).
+    """
+    has_hours = bool(task_hours.get("has_match")) and task_hours.get("estimated_hours") is not None
+    return (1 if has_hours else 0, task_hours.get("reliability") or 0.0)
 
 
 def jev_accepts(verdict: dict, accept_confidence: float) -> bool:

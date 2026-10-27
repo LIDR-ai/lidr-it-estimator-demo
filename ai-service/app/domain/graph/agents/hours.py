@@ -36,10 +36,12 @@ from app.generation.rag.task_hours import distance_weighted_consensus, estimate_
 
 from app.config import get_settings
 from app.domain.graph.agents._common import (
+    JEV_ACCEPTED_BY,
     build_estimate,
     flag_reason,
     jev_accepts,
     jev_candidate,
+    recovery_priority,
 )
 from app.domain.graph.personas import persona_for
 from app.foundation.llm.jev import JevTaskInput
@@ -150,15 +152,23 @@ async def recover_and_handover(state: dict) -> Command:
                             reliability=by_key[(f.module, f.task)].get("reliability"),
                             hours_range=by_key[(f.module, f.task)].get("hours_range"),
                             flag_reason=f.reason,
+                            neighbors=by_key[(f.module, f.task)].get("neighbors") or None,
                         )
                         for f in flagged
                         if (f.module, f.task) in candidate_keys
                     ]
                 )
             jev_decisions = [v.model_dump() for v in verdicts]
-            # Jev reports no tokens: meter it per CALL, priced by the configured flat fee.
-            for _ in verdicts:
-                record("jev", settings.JEV_MODEL, cost_usd=settings.JEV_COST_PER_CALL_USD)
+            # Jev reports its token usage (billed per input token). Simulated verdicts
+            # (JEV_FALLBACK) and failed calls are local and free.
+            for v in verdicts:
+                if v.source == "jev" and v.usage:
+                    record(
+                        "jev",
+                        v.model or settings.JEV_MODEL,
+                        input_tokens=v.usage.get("input_tokens", 0),
+                        output_tokens=v.usage.get("output_tokens", 0),
+                    )
             accepted_keys = {
                 (v["module"], v["task"])
                 for v in jev_decisions
@@ -166,13 +176,23 @@ async def recover_and_handover(state: dict) -> Command:
                 and jev_accepts(v, settings.GRAPH_JEV_ACCEPT_CONFIDENCE)
             }
             jev_errors = sum(1 for v in jev_decisions if v.get("error"))
-            if jev_errors:
+            # Stand-in verdicts that replaced a FAILED real call (JEV_FALLBACK=simulated).
+            simulated = [v for v in jev_decisions if v.get("fallback_reason")]
+            if simulated:
+                errors.append(
+                    f"jev: unavailable ({simulated[0].get('fallback_reason')}) · "
+                    f"{len(simulated)} decision(s) simulated"
+                )
+            elif jev_errors:
                 errors.append(f"jev: {jev_errors} task(s) escalated after a Jev error")
             for key in accepted_keys:
                 verdict = next(v for v in jev_decisions if (v["module"], v["task"]) == key)
                 by_key[key] = {
                     **by_key[key],
-                    "accepted_by": "jev",
+                    # Labelled: a simulated verdict must never pass for a real Jev decision.
+                    "accepted_by": (
+                        "jev_simulated" if verdict.get("source") == "simulated" else "jev"
+                    ),
                     "jev_confidence": (verdict.get("probabilities") or {}).get(
                         "accept", verdict.get("confidence")
                     ),
@@ -181,6 +201,14 @@ async def recover_and_handover(state: dict) -> Command:
                 }
             task_hours = list(by_key.values())
             flagged = [f for f in flagged if (f.module, f.task) not in accepted_keys]
+
+        # Demo-sized Trinity: only the worst doubtful tasks — no analog first, then the
+        # lowest reliability (stable sort, so ties keep their order). The rest are left
+        # exactly as an unrecovered task is: flagged, with their retrieval row.
+        doubtful_count = len(flagged)
+        flagged = sorted(flagged, key=lambda f: recovery_priority(by_key[(f.module, f.task)]))
+        if settings.GRAPH_RECOVERY_MAX_TASKS > 0:
+            flagged = flagged[: settings.GRAPH_RECOVERY_MAX_TASKS]
 
         client = get_async_openai_client()
         merged = task_hours
@@ -210,7 +238,7 @@ async def recover_and_handover(state: dict) -> Command:
                 client=client,
                 model=settings.AGENT_MODEL,
                 reasoning_effort=settings.AGENT_REASONING_EFFORT,
-                max_iterations=settings.AGENT_MAX_ITERATIONS,
+                max_iterations=settings.GRAPH_RECOVERY_MAX_ITERATIONS,
                 retrieval_backend=make_retrieval_backend(
                     settings.AGENT_SEARCH_TOP_K, agent_distance_threshold
                 ),
@@ -245,9 +273,12 @@ async def recover_and_handover(state: dict) -> Command:
             flagged=len(flagged),
             recovered=recovered_count,
             jev_candidates=len(jev_decisions),
-            jev_accepted=sum(1 for t in merged if t.get("accepted_by") == "jev"),
+            jev_accepted=sum(1 for t in merged if t.get("accepted_by") in JEV_ACCEPTED_BY),
+            jev_simulated=sum(1 for v in jev_decisions if v.get("source") == "simulated"),
             jev_errors=sum(1 for v in jev_decisions if v.get("error")),
             trinity_tasks=len(flagged),
+            trinity_skipped=doubtful_count - len(flagged),
+            max_iterations=settings.GRAPH_RECOVERY_MAX_ITERATIONS,
             trinity_input_tokens=trinity_usage.get("input_tokens", 0),
             trinity_output_tokens=trinity_usage.get("output_tokens", 0),
             trinity_reasoning_tokens=trinity_usage.get("reasoning_tokens", 0),
@@ -261,7 +292,18 @@ async def recover_and_handover(state: dict) -> Command:
             total_engineer_days=estimate.get("total_engineer_days"),
         )
         # Explicit handover: pass the estimate + merged hours to analysis_agent.
-        update = {"estimate": estimate, "task_hours": merged, "jev_decisions": jev_decisions}
+        update = {
+            "estimate": estimate,
+            "task_hours": merged,
+            "jev_decisions": jev_decisions,
+            "trinity_run": {
+                "doubtful": doubtful_count,
+                "tasks": len(flagged),
+                "recovered": recovered_count,
+                "iterations": iterations,
+                "max_iterations": settings.GRAPH_RECOVERY_MAX_ITERATIONS,
+            },
+        }
         if errors:
             update["errors"] = errors
         return Command(goto="analysis_agent", update=update)

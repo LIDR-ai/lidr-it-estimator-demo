@@ -107,9 +107,9 @@ async def test_with_jev_branch_saves_exactly_the_accepted_tasks(monkeypatch):
     assert trin_off.input_tokens - trin_on.input_tokens == 3 * TOKENS_PER_TASK
     # The upstream agents are replayed, not re-run: no classifier tokens in the branches.
     assert "ComplexityClassification" not in on["ledger"].by_source()
-    assert on["ledger"].by_source()["jev"].calls == 3
+    assert "jev" not in on["ledger"].by_source()  # the simulated Jev makes no calls
 
-    report = script.render(common, off, on, simulated=True, jev_fee=0.0)
+    report = script.render(common, off, on, simulated=True)
     saved = _estimate_cost("gpt-5", 3 * TOKENS_PER_TASK, 0)
     assert f"${saved:.4f}" in report
     assert "SIMULATED" in report
@@ -145,7 +145,6 @@ def test_render_flags_noise_cap_and_overlapping_repeats():
         _fake_run("off", 0.07, accepted=0),
         _fake_run("on", 0.24, accepted=0),
         simulated=False,
-        jev_fee=0.0,
         max_iterations=3,
     )
     assert "pure gpt-5 run-to-run noise" in report
@@ -154,7 +153,7 @@ def test_render_flags_noise_cap_and_overlapping_repeats():
     # Repeats: means drive the saving; overlapping ranges are called out.
     offs = [_fake_run("off", c, accepted=2) for c in (0.50, 0.60)]
     ons = [_fake_run("on", c, accepted=2) for c in (0.40, 0.55)]
-    report = script.render(UsageLedger(), offs, ons, simulated=True, jev_fee=0.0, max_iterations=10)
+    report = script.render(UsageLedger(), offs, ons, simulated=True, max_iterations=10)
     assert "Repeats (2 runs per branch" in report
     assert "$0.0750" in report  # mean saving: 0.55 - 0.475
     assert "OVERLAP" in report

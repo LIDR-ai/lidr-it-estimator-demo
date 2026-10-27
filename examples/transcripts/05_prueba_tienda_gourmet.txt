@@ -1,0 +1,63 @@
+Reunión de descubrimiento — Proyecto "Tienda online Despensa Norte"
+Cliente: Irene Valcárcel (directora comercial) y Pablo Ugarte (responsable de sistemas), Despensa Norte
+Consultor: equipo de estimación
+Fecha: reunión inicial
+
+[00:00:10] Consultor: Gracias por venir. Contadnos qué queréis construir y luego bajamos al detalle.
+
+[00:00:22] Irene: Somos Despensa Norte, una cadena de seis tiendas de producto gourmet del norte:
+conservas, quesos, vinos, embutidos. Hoy vendemos online con una plantilla de hace años que ya no da
+más de sí. Queremos una tienda online nueva, hecha a medida, que podamos hacer crecer.
+
+[00:01:05] Consultor: Perfecto. Empecemos por lo que ve el cliente.
+
+[00:01:12] Irene: Lo primero es el catálogo de productos: unas dos mil referencias, con fichas
+completas, fotos, origen, alérgenos y precio por peso para los quesos y embutidos al corte. Y un
+buscador bueno, con filtros por categoría, origen, precio y denominación de origen. Nos gustaría
+también un buscador por maridaje: que alguien escriba "queso para un tinto de Rioja" y le
+salgan productos que combinen. Eso no sé si es muy complicado.
+
+[00:02:30] Consultor: Lo anotamos como pieza aparte. ¿Y la compra?
+
+[00:02:38] Irene: Carrito y checkout normales, con pago con tarjeta y Bizum a través de la pasarela
+de pago de nuestro banco. Cupones y promociones, tipo "tercera unidad a mitad de precio". Y una
+cosa que queremos mucho: una suscripción mensual, la "Caja Norte", que cada mes manda una caja
+sorpresa con productos de temporada. Se paga cada mes y el cliente puede pausarla o saltarse un mes.
+
+[00:03:55] Pablo: Por detrás necesitamos la gestión de pedidos: estados, devoluciones, y que el
+pedido baje al almacén. Y el stock está en nuestro TPV de tienda, un programa antiguo que se llama
+GesTPV y que solo exporta ficheros CSV por FTP cada noche. Hay que sincronizar el stock con la web
+a partir de esos ficheros, sin venderlo dos veces. Eso nos preocupa.
+
+[00:05:10] Consultor: Entendido: sincronización de stock con el TPV vía ficheros. ¿Envíos?
+
+[00:05:18] Pablo: Trabajamos con dos transportistas. Hay que generar las etiquetas de envío y el
+seguimiento. Y los productos frescos necesitan envío refrigerado solo ciertos días de la semana,
+así que el checkout tiene que calcular qué días de entrega son posibles según el carrito. Esa
+regla es nuestra, no la tiene nadie.
+
+[00:06:30] Irene: Y comunicación con el cliente: los correos de confirmación, envío y la factura,
+y un SMS cuando el pedido sale de reparto.
+
+[00:07:00] Consultor: ¿Y la parte interna?
+
+[00:07:05] Pablo: Un panel de administración para que el equipo gestione productos, pedidos,
+clientes y las promociones sin llamarnos. Con importación masiva de productos desde Excel. Y unos
+cuadros de mando de ventas: ventas por tienda de origen, por categoría y la evolución de la Caja
+Norte, con altas y bajas.
+
+[00:08:10] Pablo: Lo técnico: login de clientes con email y contraseña y también con Google, y
+roles para el equipo interno. Todo en la nube, con despliegue automático y monitorización. Y
+cumplir con el RGPD, claro, con el registro de quién toca qué datos.
+
+[00:09:00] Consultor: Resumo: catálogo con búsqueda y filtros, buscador por maridaje, carrito y
+checkout con pasarela de pago, cupones, suscripción mensual Caja Norte, gestión de pedidos,
+sincronización de stock con GesTPV por ficheros, transportistas y etiquetas, regla de envío
+refrigerado, notificaciones por email y SMS, panel de administración con importación masiva,
+cuadros de mando de ventas, login y roles, infraestructura y RGPD. ¿Prioridades?
+
+[00:09:40] Irene: Catálogo, compra y pedidos primero; la Caja Norte y el maridaje pueden ir
+después, pero las queremos dentro de la estimación. Nos gustaría salir antes de la campaña de
+Navidad.
+
+[00:10:05] Consultor: Perfecto. Os mandamos la estimación desglosada por módulos y tareas.
